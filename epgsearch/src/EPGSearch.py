@@ -643,9 +643,14 @@ class EPGSearch(EPGSelection):
 		if event:
 			l = self["list"]
 			if len(l.list) > 1:
-				description = event.getShortDescription()
-				if description == "" or description == "no description available.":
-					description = event.getExtendedDescription()
+				filter_type = config.plugins.epgsearch.filter_type.value
+				if filter_type == "exact_whole":
+					description = event.getShortDescription() + event.getExtendedDescription()
+				else:
+					description = event.getShortDescription()
+					if description == "" or description == "no description available.":
+						description = event.getExtendedDescription()
+
 				if description:
 					filter_list = []
 					for x in l.list:
@@ -654,8 +659,11 @@ class EPGSearch(EPGSelection):
 							service = ServiceReference(x[0])
 							ev = l.getEventFromId(service, event_id)
 							if ev:
-								if config.plugins.epgsearch.filter_type.value == "exact":
+								if filter_type == "exact":
 									if (ev.getShortDescription() and ev.getShortDescription() == description) or (ev.getExtendedDescription() and ev.getExtendedDescription() == description):
+										filter_list.append(x)
+								elif filter_type == "exact_whole":
+									if (ev.getShortDescription() + ev.getExtendedDescription() == description):
 										filter_list.append(x)
 								else:
 									if (ev.getShortDescription() and ev.getShortDescription() in description) or (ev.getExtendedDescription() and ev.getExtendedDescription() in description):
@@ -764,6 +772,8 @@ class EPGSearch(EPGSelection):
 			event = self["list"].getCurrent()[0]
 			if event:
 				searchText = event.getEventName()
+			elif self.currSearch != "":
+				searchText = self.currSearch
 		self.session.openWithCallback(
 			self.searchEPG,
 			VirtualKeyBoard,
@@ -913,7 +923,37 @@ class EPGSearch(EPGSelection):
 			self.session.open(MessageBox, _("List of history is cleared !"), type=MessageBox.TYPE_INFO, timeout=3)
 
 	def setup(self):
-		self.session.open(EPGSearchSetup)
+		self.filter_type_before_setup = config.plugins.epgsearch.filter_type.value
+		self.search_settings_before_setup = self.getSearchSettings()
+		self.session.openWithCallback(self.setupClosed, EPGSearchSetup)
+
+	def setupClosed(self):
+		epg = config.plugins.epgsearch
+		search_settings = self.getSearchSettings()
+		if self.currSearch and self.search_settings_before_setup != search_settings:
+			global BouquetChannelListList, IptvBouquetChannelListList
+			BouquetChannelListList = None
+			IptvBouquetChannelListList = None
+			self.searchEPG(self.currSearch, False)
+		elif self.do_filter is not None and self.filter_type_before_setup != epg.filter_type.value:
+			self.hide_filter()
+			self.show_filter()
+
+	# Track settings that affect EPG search results.
+	# Exclude unrelated settings to avoid unnecessary searches after closing setup.
+	# The result filter is handled separately without repeating the EPG search.
+	# New settings are included automatically unless explicitly excluded.
+	def getSearchSettings(self):
+		return {
+			name: item.value
+			for name, item in config.plugins.epgsearch.dict().items()
+			if name not in (
+				"filter_type", "history", "history_length",
+				"add_search_to_epg", "type_button_blue",
+				"yellow_eventname", "picons",
+				"show_in_furtheroptionsmenu", "search_in_channelmenu"
+			)
+		}
 
 	def blueButtonPressed(self):
 		if len(config.plugins.epgsearch.history.value):
@@ -941,6 +981,7 @@ class EPGSearch(EPGSelection):
 				l.list = []
 				l.l.setList(l.list)
 			self.currSearch = searchString
+			self.setTitle("%s:  %s" % (_("EPG Search"), searchString))
 			if searchSave:
 				# Maintain history
 				history = config.plugins.epgsearch.history.value
@@ -1029,7 +1070,7 @@ class EPGSearch(EPGSelection):
 						if y == e[0]:
 							new_e = (x, e[1], e[2], e[3], e[4])
 							result.append(new_e)
-							continue
+							break
 			else:
 				for e in epglist:
 					if ":http" in e[0]:
@@ -1039,7 +1080,7 @@ class EPGSearch(EPGSelection):
 						y = ':'.join(GetWithAlternative(x).split(':')[:11])
 						if y == e[0]:
 							result.append(e)
-							continue
+							break
 		return result
 
 	def getBouquetChannelList(self):
@@ -1070,6 +1111,8 @@ class EPGSearch(EPGSelection):
 		if bouquetlist:
 			for bouquet in bouquetlist:
 				if not bouquet.valid():
+					continue
+				if config.plugins.epgsearch.bouquet.value and config.plugins.epgsearch.exclude_lastscanned.value and 'FROM BOUQUET "userbouquet.LastScanned.tv"' in bouquet.toString():
 					continue
 				if bouquet.flags & eServiceReference.isDirectory:
 					services = serviceHandler.list(bouquet)
